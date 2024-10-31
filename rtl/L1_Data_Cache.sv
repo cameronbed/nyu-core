@@ -26,9 +26,7 @@ module sram_module(
     localparam ADDR_WIDTH    = 32; 
 
     reg [BLOCK_WIDTH -1:0] memory_array [0:NUM_SETS * ASSOCIATIVITY - 1];
-    wire [ADDR_WIDTH -1:0] actual_address = set_index * ASSOCIATIVITY + way_select;   
-//    wire gated_clk = clk & (write_enable | read_enable); //Power saving Consideration
-//  but the write or read is continously high for this module
+    wire [ADDR_WIDTH -1:0] actual_address = set_index * ASSOCIATIVITY + {31'b0, way_select};   
     
     always @(posedge clk) begin
         if (write_enable) begin
@@ -37,7 +35,7 @@ module sram_module(
                 //Enables updating of only least significant byte, least signficant half, or entire word
                 case(data_mode)
                 0: memory_array[actual_address] <= {memory_array[actual_address][31:8], write_data[7:0]};
-                1: memory_array[actual_address] <= {memory_array[actual_address][31:15], write_data[15:0]};
+                1: memory_array[actual_address] <= {memory_array[actual_address][31:16], write_data[15:0]};
                 default: memory_array[actual_address] <= write_data;
                 endcase
 
@@ -92,12 +90,13 @@ module L1_Data_Cache(
     reg [TAG_WIDTH - 1:0] cache_tags [0:NUM_SETS-1][0:ASSOCIATIVITY-1];
     reg valid [0:NUM_SETS-1][0:ASSOCIATIVITY-1];
     reg dirty [0:NUM_SETS-1][0:ASSOCIATIVITY-1];
-    reg [ASSOCIATIVITY-1:0] lru_counter [0:NUM_SETS-1];
+    reg [31:0] lru_counter [0:NUM_SETS-1][ASSOCIATIVITY-1:0];
     
     reg hit;
-    reg [ASSOCIATIVITY-1:0] way, lru_way;
+    reg [ASSOCIATIVITY-2:0] way, lru_way;
     
-    reg sram_read_req =0;
+    
+    reg sram_read_req = 0;
 
     typedef enum integer {IDLE, CHECK_TAG, WRITEBACK, FILL} cache_state_t;
     cache_state_t state = IDLE;
@@ -116,10 +115,11 @@ module L1_Data_Cache(
         logic write_enable;
         logic read_enable;
         logic way;
-        logic [1:0] data_mode,
+        logic [1:0] data_mode;
         logic [8:0] index;
 
     }sram_data_t;
+    sram_data_t put_sram_data;
  
     sram_module cache_data_sram (
         .clk(clk),
@@ -133,17 +133,16 @@ module L1_Data_Cache(
     );
      
     // LRU Function
-    function integer get_lru_way(input integer set_index);
+    function reg [ASSOCIATIVITY-2:0] get_lru_way(input [INDEX_WIDTH-1:0] set_index);
         integer i;
-        reg [ASSOCIATIVITY-1:0] max_count;
+        integer max_count;
         begin
             max_count = 0;
-            //max_count = -1; -1 here is 32'hFFFFFFFF turnication happens and max_count will be 3
             lru_way = 0;
             for (i = 0; i < ASSOCIATIVITY; i = i + 1) begin            
                 if (lru_counter[set_index][i] > max_count) begin
                     max_count = lru_counter[set_index][i];
-                    lru_way = i;
+                    lru_way = i[ASSOCIATIVITY-2:0];
                 end
             end
             get_lru_way = lru_way;
@@ -182,7 +181,8 @@ module L1_Data_Cache(
     endtask
     
     task set_sram_read_request;
-        input integer index, way;
+        input [INDEX_WIDTH-1:0] index;
+        input way;
         begin
             put_sram_data.read_enable <= 1;
             put_sram_data.write_enable <= 0;
@@ -192,7 +192,10 @@ module L1_Data_Cache(
     endtask
     
     task set_sram_write_request;
-        input integer index, way, data, data_mode;
+        input [INDEX_WIDTH-1:0] index;
+        input way;
+        input [31:0] data;
+        input [1:0] data_mode;
         begin
             put_sram_data.write_enable <= 1;
             put_sram_data.read_enable <= 0;
@@ -214,11 +217,11 @@ module L1_Data_Cache(
         end
     endtask
     
-    task update_lru_counters(input integer set_index, input integer accessed_way);
+    task update_lru_counters(input [INDEX_WIDTH-1:0] set_index, input [ASSOCIATIVITY-2:0] accessed_way);
         integer i;
         begin
             for (i = 0; i < ASSOCIATIVITY; i = i + 1) begin
-                if (i == accessed_way) begin
+                if (i[ASSOCIATIVITY-2:0] == accessed_way) begin
                     lru_counter[set_index][i] <= 0;
                 end else if (lru_counter[set_index][i] != (ASSOCIATIVITY - 1)) begin
                     lru_counter[set_index][i] <= lru_counter[set_index][i] + 1;
@@ -231,18 +234,15 @@ module L1_Data_Cache(
     task reset_cache;
         integer i, j;
         begin
-            // resetting all these in single clock?
-            // use valid bits to reset may be
             state <= IDLE;
             for (i = 0; i < NUM_SETS; i = i+1) begin
                 for (j = 0; j < ASSOCIATIVITY; j = j+1) begin
                     
-                    set_sram_write_request(i, j, 0, 2);
-                    cache_tags[i][j] <= 0;
-                    valid[i][j] <= 0;
-                    dirty[i][j] <= 0;
-//                    lru_counter[i][j] <= j; // biased
-                    lru_counter[i][j] <= 1; // still no
+                    set_sram_write_request(i[INDEX_WIDTH-1:0], j[ASSOCIATIVITY-2], 0, 2);
+                    cache_tags[i][j] = 0;
+                    valid[i][j] = 0;
+                    dirty[i][j] = 0;
+                    lru_counter[i][j] = 1; 
                 end
             end
         end
@@ -264,13 +264,11 @@ module L1_Data_Cache(
         integer i;
         begin
             hit = 0;
-            // have to parallel check for better performance and parallely start the sram
-            // instantiate the sram in prev state maybe
             lru_way = get_lru_way(current_addr.index); 
             for (i = 0; i < ASSOCIATIVITY; i = i + 1) begin
                 if (valid[current_addr.index][i] && cache_tags[current_addr.index][i] == current_addr.tag) begin
                     hit = 1;
-                    way = i;                
+                    way = i[ASSOCIATIVITY-2:0];
                     break;
                 end
             end
@@ -295,7 +293,7 @@ module L1_Data_Cache(
                     mem_write_enable <= 0;
                     mem_request <= 0;
                     sram_read_req <= 0;
-                    state <= FILL; 
+                    state <= FILL;
                 end 
             end
         end
