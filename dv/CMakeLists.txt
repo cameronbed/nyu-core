@@ -31,25 +31,25 @@ target_sources(tests PRIVATE
 
 nyu_link_sv(tests PRIVATE core)
 nyu_target_verilate(tests
-  # ARGS COVERAGE TRACE_FST
-  # TOP_MODULES 
+  ARGS COVERAGE TRACE_FST
+  TOP_MODULES 
   Alu
   
-  # Branch_Addr_Calc
-  # Branch_Eval
-  # Branch_Manager
-  # Branch_Predictor
+  Branch_Addr_Calc
+  Branch_Eval
+  Branch_Manager
+  Branch_Predictor
 
-  # Con_Branch_Cont 
-  # Con_EX
-  # Con_ID
+  Con_Branch_Cont 
+  Con_EX
+  Con_ID
   
-  # Data_Cache_Manager
-  # EXMEM
+  Data_Cache_Manager
+  EXMEM
 
-  # GPR
-  # IDEX
-  # IFID
+  GPR
+  IDEX
+  IFID
 
   # Failing
   # L1_Data_Cache
